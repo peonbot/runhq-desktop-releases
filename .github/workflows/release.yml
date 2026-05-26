@@ -66,6 +66,7 @@ jobs:
         run: pnpm --filter @runhq/server-protocol build
 
       - name: Write client production env (baked into the bundled webview)
+        shell: bash
         run: |
           {
             echo "VITE_CONSOLE_URL=https://console.runhq.io"
