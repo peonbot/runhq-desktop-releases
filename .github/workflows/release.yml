@@ -1,9 +1,17 @@
 name: Desktop Release
 
 # Builds the RunHQ desktop app on FREE public-repo runners by checking out the
-# private peonbot/RunHQ source, then publishes a draft GitHub Release (installers
-# + signed latest.json) to THIS public repo. The private source is only ever
-# pulled into the ephemeral runner — it is never committed here.
+# private peonbot/RunHQ source. The private source is only ever pulled into the
+# ephemeral runner — it is never committed here.
+#
+# 3-job structure (the tauri-action matrix pattern) avoids the parallel-publish
+# race AND guarantees a single failed platform never ships a partial release:
+#   create-release  -> makes a DRAFT release + computes the auto version
+#   build (matrix)  -> uploads each OS's installers + latest.json to that draft
+#   publish-release -> flips the draft to published, ONLY if all 3 builds passed
+#
+# Version is auto-derived as 0.1.<run_number> (CI is the single source of truth);
+# no manual version bumps, no input to type. Just run the workflow.
 
 on:
   workflow_dispatch:
@@ -12,12 +20,36 @@ on:
         description: 'peonbot/RunHQ ref to build (branch, tag, or SHA)'
         required: false
         default: master
-  push:
-    tags:
-      - 'v*'
 
 jobs:
-  release:
+  create-release:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.mk.outputs.result }}
+      app_version: ${{ steps.ver.outputs.version }}
+    steps:
+      - id: ver
+        run: echo "version=0.1.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+      - id: mk
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string
+          script: |
+            const version = "0.1.${{ github.run_number }}";
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: `v${version}`,
+              name: `RunHQ v${version}`,
+              draft: true,
+              prerelease: false,
+            });
+            return data.id;
+
+  build:
+    needs: create-release
     permissions:
       contents: write
     strategy:
@@ -73,18 +105,17 @@ jobs:
           } > client/.env.production
           cat client/.env.production
 
-      - name: Auto-version from build number (CI is the single source of truth)
+      - name: Set app version (single source of truth from create-release)
         shell: bash
         run: |
-          APP_VERSION="0.1.${{ github.run_number }}"
-          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
+          APP_VERSION="${{ needs.create-release.outputs.app_version }}"
           tmp=$(mktemp)
           # tauri.conf.json version is authoritative for the app + updater version
           jq --arg v "$APP_VERSION" '.version = $v' apps/desktop/src-tauri/tauri.conf.json > "$tmp" && mv "$tmp" apps/desktop/src-tauri/tauri.conf.json
           jq --arg v "$APP_VERSION" '.version = $v' apps/desktop/package.json > "$tmp" && mv "$tmp" apps/desktop/package.json
           echo "App version set to $APP_VERSION"
 
-      - name: Build & publish
+      - name: Build & upload installers to the draft release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -92,9 +123,22 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/desktop
-          tagName: v${{ env.APP_VERSION }}
-          releaseName: 'RunHQ v${{ env.APP_VERSION }}'
-          releaseDraft: false
-          prerelease: false
+          releaseId: ${{ needs.create-release.outputs.release_id }}
           includeUpdaterJson: true
           args: ${{ matrix.args }}
+
+  publish-release:
+    needs: [create-release, build]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: ${{ needs.create-release.outputs.release_id }},
+              draft: false,
+            });
