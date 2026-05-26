@@ -8,9 +8,6 @@ name: Desktop Release
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Release version / tag, e.g. v0.0.2'
-        required: true
       source_ref:
         description: 'peonbot/RunHQ ref to build (branch, tag, or SHA)'
         required: false
@@ -76,6 +73,17 @@ jobs:
           } > client/.env.production
           cat client/.env.production
 
+      - name: Auto-version from build number (CI is the single source of truth)
+        shell: bash
+        run: |
+          APP_VERSION="0.1.${{ github.run_number }}"
+          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
+          tmp=$(mktemp)
+          # tauri.conf.json version is authoritative for the app + updater version
+          jq --arg v "$APP_VERSION" '.version = $v' apps/desktop/src-tauri/tauri.conf.json > "$tmp" && mv "$tmp" apps/desktop/src-tauri/tauri.conf.json
+          jq --arg v "$APP_VERSION" '.version = $v' apps/desktop/package.json > "$tmp" && mv "$tmp" apps/desktop/package.json
+          echo "App version set to $APP_VERSION"
+
       - name: Build & publish
         uses: tauri-apps/tauri-action@v0
         env:
@@ -84,9 +92,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/desktop
-          tagName: ${{ github.event.inputs.version || github.ref_name }}
-          releaseName: 'RunHQ ${{ github.event.inputs.version || github.ref_name }}'
-          releaseDraft: true
+          tagName: v${{ env.APP_VERSION }}
+          releaseName: 'RunHQ v${{ env.APP_VERSION }}'
+          releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
           args: ${{ matrix.args }}
