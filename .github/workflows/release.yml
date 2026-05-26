@@ -65,6 +65,16 @@ jobs:
       - name: Build protocol package
         run: pnpm --filter @runhq/server-protocol build
 
+      - name: Write client production env (baked into the bundled webview)
+        run: |
+          {
+            echo "VITE_CONSOLE_URL=https://console.runhq.io"
+            echo "VITE_API_URL=https://console.runhq.io"
+            echo "VITE_PREVIEW_DOMAINS=tank.fish"
+            echo "VITE_VAPID_PUBLIC_KEY=BP72ICOMQP0N9s56yvRPwE26WplY4N3paKw1Evtt3HrfXd3URcdQ4QrngDBb8Lvk7PIy297oT2IlhhX2vA-1wP0"
+          } > client/.env.production
+          cat client/.env.production
+
       - name: Build & publish
         uses: tauri-apps/tauri-action@v0
         env:
